@@ -1,0 +1,293 @@
+---
+title: "Imagine"
+author: 
+date: 
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(knitr)
+
+library(rethinking)
+library(dplyr)
+library(tidyr)
+
+library(shinythemes, quietly =  TRUE)
+
+# pirate plots
+# install.packages("devtools") # Only if you don't have the devtools library already installed
+   # library("devtools")
+   # install_github("ndphillips/yarrr")
+
+# library(yarrr)
+
+options(digits = 3)
+options(xtable.include.rownames=F)
+```
+
+
+```{r assumptions}
+
+
+fluidPage(theme = shinytheme("flatly"), 
+inputPanel(
+  selectInput("randomize", label = "Intervention randomized by",
+              choices = c("cluster", "district"), selected = "district"),
+  
+  sliderInput("num_districts", label = "Number of districts",
+              min = 2, max = 10, value = 2, step = 1),
+  
+  sliderInput("n_clinics", label = "Number of clinics",
+              min = 2, max = 40, value = 10, step = 2),
+  
+  sliderInput("mean_population", label = "Average clinic catchment size",
+              min = 1000, max = 10000, value = 2500, step = 500),
+  
+  sliderInput("bkrd_mean_incidence", label = "Average incidence per annum",
+              min = .01, max = 1, value = .1, step = .1),
+  
+  sliderInput("reporting_sensitivity", label = "Reporting sensitivity",
+              min = .01, max = 1, value = .6, step = .1),
+  
+   sliderInput("reporting_specificity", label = "Reporting specifiicty",
+              min = .01, max = 1, value = .6, step = .1),
+
+   sliderInput("percent.fever.not.malaria", label = "% fever not malaria",
+              min = .01, max = 1, value = .6, step = .1),
+  
+  sliderInput("effectiveness", label = "Intervention effectiveness",
+              min = 0, max = 1, value = .1, step = .05),
+  
+   selectInput("period", label = "Intervention time period",
+              choices = c("pre", "post"), selected = "post"),
+  
+  actionButton("goButton", "Press to see resluts of one simulated dataset (press again to see another)")
+))
+
+
+```
+
+```{r functions}
+
+intervention = function(.clinics = clinics, .randomize = randomize) {
+   
+   clinics = .clinics$clinic
+   districts = .clinics$district
+   
+   if ( .randomize == "district") {
+         
+         n = floor( length( unique(districts) ) / 2)
+         r = sample(districts, n)
+         intervention = ifelse( grepl( paste0(r, collapse = "|")  , districts) , 1, 0 )
+
+   } else if ( .randomize == "cluster") {
+   
+         n = floor( length(clinics) / 2)
+         r = sample(clinics, n)
+         intervention = ifelse( grepl( paste0(r, collapse = "|") , clinics) , 1, 0 )
+   
+   } else NA
+   
+   return(intervention)
+}
+
+   
+      
+clinics = function(
+   randomize = "district" ,
+   num_districts = 2  ,
+   n_clinics = 20  , # mean number of clinics.
+   mean_population = 2500 
+   ){
+   
+   # trt = function(district) district %in% district_treatment
+   
+   districts = LETTERS[1:num_districts]
+   
+   district_list = data_frame( 
+         district = unname(unlist(
+            lapply( districts, FUN = function(x){
+            rep( x, 
+                as.integer( rnorm(1, n_clinics, n_clinics/6) ) 
+               )
+            } )
+            ))
+         )
+   
+   clinics_list = district_list  %>% 
+      group_by( district ) %>%
+      mutate(
+         clinic =  letters[row_number()] ,
+         clinic = paste0( district, clinic) ,
+         population = rpois(n(), mean_population)
+         
+      ) 
+   
+   clinics_list$intervention = intervention(.clinics = clinics_list, .randomize = randomize)
+      
+   
+   clinics_list$id = as.numeric(rownames(clinics_list))
+
+return(clinics_list)
+}
+
+disease = function(
+   clinic_list = c,
+   bkrd_mean_incidence = .1  , # yearly total
+   reporting_sensitivity = .6,
+   reporting_specificity = .6,
+   percent.fever.not.malaria = .7, 
+   effectiveness = 0.1,
+   period = "pre" # or "post" referring to intervention period
+   
+){
+   
+
+   betaShapeA = function(m, s){  # formulas for shape parameters from Kruschke, ch. 5, 'doing basyesian data analysis' 
+      m * ( (m*(1-m)/s^2) - 1 )
+   }
+   
+   betaShapeB = function(m, s){
+      ( 1- m) * ( (m*(1-m)/s^2) - 1 )
+   }
+   
+   disease = clinic_list  %>% 
+      group_by( district ) %>%
+      mutate(
+         
+         period = period,
+         
+         trt = (period %in% "post") * intervention,
+
+         incidence = rbeta( n(), 
+                            betaShapeA( bkrd_mean_incidence, bkrd_mean_incidence/3),
+                            betaShapeB( bkrd_mean_incidence, bkrd_mean_incidence/3)
+         ),
+         
+         mean_cases =  incidence  * population , 
+         
+         sensitivity = rbeta( n(), 
+                              betaShapeA( reporting_sensitivity, reporting_sensitivity/3),
+                              betaShapeB( reporting_sensitivity, reporting_sensitivity/3)
+                              ),
+         
+         specificity = rbeta( n(), 
+                              betaShapeA( reporting_sensitivity, reporting_specificity/3),
+                              betaShapeB( reporting_sensitivity, reporting_specificity/3)
+                              ) ,
+         
+         false_positive = 
+            rpois( n(), 
+                   (1 - specificity) * (mean_cases * percent.fever.not.malaria) /
+                                    (1 - percent.fever.not.malaria) ) ,
+         
+         cases = as.integer(
+            ifelse( trt == 1 & (period %in% "post") ,  
+                    rpois(n(), 
+                          reporting_sensitivity * 
+                                            ( mean_cases * (1-effectiveness)  + false_positive ) ),
+                         rpois(n(), 
+                               reporting_sensitivity * (mean_cases  + false_positive) )
+         ))
+      ) 
+   
+   return(disease)
+}
+
+
+```
+
+```{r }
+# DATA
+c = reactive({
+   if( input$goButton > 0){
+   clinics(
+           randomize = input$randomize,
+           num_districts = input$num_districts  ,
+           n_clinics = input$n_clinics  , 
+           mean_population = input$mean_population 
+           )
+   }
+})
+
+d = reactive({
+   if( input$goButton > 0){
+   disease(
+           clinic_list = c(),
+           bkrd_mean_incidence = input$bkrd_mean_incidence  ,
+           reporting_sensitivity = input$reporting_sensitivity ,
+           reporting_specificity = input$reporting_specificity ,
+           percent.fever.not.malaria = input$percent.fever.not.malaria ,
+           effectiveness = input$effectiveness ,
+           period = input$period
+           )
+   }
+})
+
+# summarise results
+
+fluidRow(
+   
+column(6, 
+ renderPlot({
+    
+      if( input$goButton == 0) return()
+    
+      # pirateplot( cases ~ trt , data = d(), main = "Malaria cases at each clinic, by treatment group",
+      #             theme.o = 3, point.o = .7, hdi.o = .5, bar.o = 0 )
+
+   plot( cases ~ factor(trt), data = d(),
+         main = "Cases by treatment group", theme.o = 3, point.o = .7, hdi.o = .5,
+         bar.o = 0 )
+   
+   #    plot( population ~ factor(trt), data = d(),
+#          main = "Population by treatment group", theme.o = 3, point.o = .7, hdi.o = .6,
+#          bar.o = 0)
+
+   })
+),
+
+column(6, 
+renderTable({
+   
+   if( input$goButton == 0) return()
+   
+   # d() %>% summarise( n_clinics = n() )
+  d() %>% group_by(trt) %>% summarise( `Mean cases`= mean(cases)) 
+  
+}), 
+
+renderPlot({
+   
+   if( input$goButton == 0) return()
+   
+   # fixed effects
+   m1 = map(
+      alist( 
+         cases ~ dbinom( population, p ),
+         logit(p) <- a + bt * trt ,
+         a ~ dnorm( 0, 10 ),
+         bt ~ dnorm( 0 , 10)
+         
+         ), data = as.data.frame( d() )
+   )
+   # precis(m1)
+
+   post <- extract.samples( m1 )
+   eff = (1 - exp(post$bt)) * 100
+   
+   
+   library(BEST)
+   plotPost(eff)
+   
+}
+
+)
+
+
+))
+
+
+```
