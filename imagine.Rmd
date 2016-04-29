@@ -313,7 +313,9 @@ df = reactive({
 # loop 
 
 # summarise results
+ tabsetPanel(
 
+    tabPanel("Random Trial", 
 fluidRow(
    
 column(4, 
@@ -374,6 +376,77 @@ column(4,
 )
 
 , style='width: 1200px;')
+),
+
+tabPanel("Long Run", 
+             
+   renderPlot({
+
+      if( input$goButton == 0) return()
+   
+      run = 50
+      for ( i in 1:run){
+         
+            c = clinics(
+                 randomize = input$randomize,
+                 num_districts = input$num_districts  ,
+                 n_clinics = input$n_clinics  , 
+                 mean_population = input$mean_population 
+                 )
+            
+            d = disease(
+                 clinic_list = c,
+                 bkrd_mean_incidence = input$bkrd_mean_incidence  ,
+                 case.sensitivity = input$case.sensitivity ,
+                 case.specificity = input$case.specificity ,
+                 test.positive.rate =  input$test.positive.rate ,
+                 reporting.fidelity = input$reporting.fidelity, 
+                 effectiveness = input$effectiveness
+                 # period = input$period
+                 )
+            
+            eff =  m1 = map(
+            alist(
+               cases ~ dbinom( population, p ),
+               logit(p) <- a + bt * trt ,
+               a ~ dnorm( 0, 10 ),
+               bt ~ dnorm( 0 , 10)
+      
+               ), data = as.data.frame( d )
+         )
+         
+         post <- extract.samples( m1 )
+         effect = (1 - exp(post$bt)) * 100
+      
+      temp <- bind_cols(
+         data.frame( interation = i ) ,
+         as.data.frame( t(quantile(effect, probs = seq(.025, .975, .475) )) )
+      )
+
+      if( i == 1 ){
+
+         df_data <- temp
+
+      } else {
+
+         temp2 = df_data
+         df_data <- bind_rows( temp2 , temp )
+      }
+   }
+
+    
+    ggplot( df_data %>% arrange(-`50%`) %>% mutate( order = row_number()), 
+            aes( x = `50%`, y = order )) +
+    geom_point(size=5, shape=18) +
+    geom_errorbarh(aes(xmax = `97.5%`, xmin = `2.5%`), height = 0.15) +
+    geom_vline(xintercept = 0, linetype = "longdash") +
+    labs(x="Estimated effectiveness", y="")
+    
+   })
+           
+           
+    )
+ )
 
 
 ```
