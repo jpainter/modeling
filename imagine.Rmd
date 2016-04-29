@@ -5,6 +5,11 @@ date:
 output: html_document
 runtime: shiny
 ---
+<style>
+body {
+    position: absolute;
+    left: 0px;}
+</style>
 
 ```{r setup, include=FALSE, warning=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
@@ -15,6 +20,8 @@ library(dplyr)
 library(tidyr)
 
 library(shinythemes, quietly =  TRUE)
+
+library(BEST) # for posterior plot
 
 # pirate plots
 # install.packages("devtools") # Only if you don't have the devtools library already installed
@@ -33,11 +40,9 @@ options(xtable.include.rownames=F)
 
 fluidPage(theme = shinytheme("flatly"), 
 inputPanel(
-  selectInput("randomize", label = "Intervention randomized by",
-              choices = c("cluster", "district"), selected = "district"),
-  
+
   sliderInput("num_districts", label = "Number of districts",
-              min = 2, max = 10, value = 2, step = 1),
+              min = 2, max = 60, value = 2, step = 1),
   
   sliderInput("n_clinics", label = "Number of clinics",
               min = 2, max = 40, value = 10, step = 2),
@@ -48,23 +53,38 @@ inputPanel(
   sliderInput("bkrd_mean_incidence", label = "Average incidence per annum",
               min = .01, max = 1, value = .1, step = .1),
   
-  sliderInput("reporting_sensitivity", label = "Reporting sensitivity",
+  sliderInput("case.sensitivity", label = "Case detection sensitivity",
               min = .01, max = 1, value = .6, step = .1),
   
-   sliderInput("reporting_specificity", label = "Reporting specifiicty",
+   sliderInput("case.specificity", label = "Case detection specifiicty",
               min = .01, max = 1, value = .6, step = .1),
 
-   sliderInput("percent.fever.not.malaria", label = "% fever not malaria",
+   sliderInput("test.positive.rate", label = "Test positive rate",
+              min = .01, max = 1, value = .6, step = .1),
+  
+  sliderInput("reporting.fidelity", label = "Reporting fidelity",
               min = .01, max = 1, value = .6, step = .1),
   
   sliderInput("effectiveness", label = "Intervention effectiveness",
               min = 0, max = 1, value = .1, step = .05),
   
-   selectInput("period", label = "Intervention time period",
-              choices = c("pre", "post"), selected = "post"),
+   # selectInput("period", label = "Intervention time period",
+   #            choices = c("pre", "post"), selected = "post"),
   
-  actionButton("goButton", "Press to see resluts of one simulated dataset (press again to see another)")
-))
+    selectInput("randomize", label = "Intervention randomized by",
+              choices = c("cluster", "district"), selected = "district"),
+  
+  actionButton("goButton", "Each press creates a trial",
+               width = "100%"),
+
+  actionButton("reset", "Clear")
+  # ,
+  # 
+  # actionButton("run", "Create a long run")
+   
+) 
+, style='width: 1200px;'
+)
 
 
 ```
@@ -136,11 +156,12 @@ return(clinics_list)
 disease = function(
    clinic_list = c,
    bkrd_mean_incidence = .1  , # yearly total
-   reporting_sensitivity = .6,
-   reporting_specificity = .6,
-   percent.fever.not.malaria = .7, 
+   case.sensitivity = .6,
+   case.specificity = .6,
+   test.positive.rate = .7, 
+   reporting.fidelity = .8, 
    effectiveness = 0.1,
-   period = "pre" # or "post" referring to intervention period
+   period = "post" # or "post" referring to intervention period
    
 ){
    
@@ -159,7 +180,7 @@ disease = function(
          
          period = period,
          
-         trt = (period %in% "post") * intervention,
+         trt =  (period %in% "post") * intervention,
 
          incidence = rbeta( n(), 
                             betaShapeA( bkrd_mean_incidence, bkrd_mean_incidence/3),
@@ -168,30 +189,31 @@ disease = function(
          
          mean_cases =  incidence  * population , 
          
-         sensitivity = rbeta( n(), 
-                              betaShapeA( reporting_sensitivity, reporting_sensitivity/3),
-                              betaShapeB( reporting_sensitivity, reporting_sensitivity/3)
+        sensitivity = rbeta( n(), 
+                              betaShapeA( case.sensitivity, case.sensitivity/3),
+                              betaShapeB( case.sensitivity, case.sensitivity/3)
                               ),
          
          specificity = rbeta( n(), 
-                              betaShapeA( reporting_sensitivity, reporting_specificity/3),
-                              betaShapeB( reporting_sensitivity, reporting_specificity/3)
+                              betaShapeA( case.specificity, case.specificity/3),
+                              betaShapeB( case.specificity, case.specificity/3)
                               ) ,
          
          false_positive = 
             rpois( n(), 
-                   (1 - specificity) * (mean_cases * percent.fever.not.malaria) /
-                                    (1 - percent.fever.not.malaria) ) ,
+                   (1 - case.specificity) * mean_cases * ( (1/test.positive.rate) - 1 ) ) ,
          
          cases = as.integer(
             ifelse( trt == 1 & (period %in% "post") ,  
                     rpois(n(), 
-                          reporting_sensitivity * 
+                         reporting.fidelity * case.sensitivity * 
                                             ( mean_cases * (1-effectiveness)  + false_positive ) ),
                          rpois(n(), 
-                               reporting_sensitivity * (mean_cases  + false_positive) )
+                               reporting.fidelity * case.sensitivity * (mean_cases  + false_positive) )
          ))
       ) 
+   
+   # disease$group = factor( disease$trt , levels = 0:1, labels = c('Control', 'Treatment') ) 
    
    return(disease)
 }
@@ -201,15 +223,17 @@ disease = function(
 
 ```{r }
 # DATA
+
 c = reactive({
    if( input$goButton > 0){
+      
    clinics(
            randomize = input$randomize,
            num_districts = input$num_districts  ,
            n_clinics = input$n_clinics  , 
            mean_population = input$mean_population 
            )
-   }
+      }
 })
 
 d = reactive({
@@ -217,20 +241,82 @@ d = reactive({
    disease(
            clinic_list = c(),
            bkrd_mean_incidence = input$bkrd_mean_incidence  ,
-           reporting_sensitivity = input$reporting_sensitivity ,
-           reporting_specificity = input$reporting_specificity ,
-           percent.fever.not.malaria = input$percent.fever.not.malaria ,
-           effectiveness = input$effectiveness ,
-           period = input$period
+           case.sensitivity = input$case.sensitivity ,
+           case.specificity = input$case.specificity ,
+           test.positive.rate =  input$test.positive.rate ,
+           reporting.fidelity = input$reporting.fidelity, 
+           effectiveness = input$effectiveness
+           # period = input$period
            )
    }
 })
+
+eff = reactive({
+   
+   # fixed effects
+   
+   m1 = map(
+      alist(
+         cases ~ dbinom( population, p ),
+         logit(p) <- a + bt * trt ,
+         a ~ dnorm( 0, 10 ),
+         bt ~ dnorm( 0 , 10)
+
+         ), data = as.data.frame( d() )
+   )
+   
+   # variable intercept
+   # m2 = map(
+   #    alist( 
+   #       cases ~ dbinom( population, p ),
+   #       logit(p) <- a[id] + bt * trt ,
+   #       a[id] ~ dnorm( 0, 10 ),
+   #       bt ~ dnorm( 0 , 10)
+   #       ), data = as.data.frame( d() )
+   #    )
+
+   post <- extract.samples( m1 )
+   effect = (1 - exp(post$bt)) * 100
+   
+   return(effect)
+})
+
+
+values <- reactiveValues(df_data = NULL)
+
+observeEvent(input$reset, {
+    values$df_data <- NULL
+  })  
+
+df = reactive({
+   
+   if( input$goButton == 0) return()
+   
+   temp <- bind_cols(
+      data.frame( interation = input$goButton ) ,
+      as.data.frame( t(quantile(eff(), probs = seq(.025, .975, .475) )) )
+   )
+   
+   if( input$goButton == 1 ){
+
+      values$df_data <- temp
+
+   } else {
+
+      temp2 = isolate(values$df_data)
+      values$df_data <- bind_rows( temp2 , temp )
+   }
+   
+   return( values$df_data )
+  })
+
+# loop 
 
 # summarise results
 
 fluidRow(
    
-column(6, 
+column(4, 
  renderPlot({
     
       if( input$goButton == 0) return()
@@ -249,45 +335,45 @@ column(6,
    })
 ),
 
-column(6, 
+column(4, 
 renderTable({
-   
+
    if( input$goButton == 0) return()
-   
+
    # d() %>% summarise( n_clinics = n() )
-  d() %>% group_by(trt) %>% summarise( `Mean cases`= mean(cases)) 
-  
-}), 
+  d() %>% group_by(trt) %>% summarise( `Mean cases`= mean(cases))
+
+}),
 
 renderPlot({
    
    if( input$goButton == 0) return()
    
-   # fixed effects
-   m1 = map(
-      alist( 
-         cases ~ dbinom( population, p ),
-         logit(p) <- a + bt * trt ,
-         a ~ dnorm( 0, 10 ),
-         bt ~ dnorm( 0 , 10)
-         
-         ), data = as.data.frame( d() )
-   )
-   # precis(m1)
-
-   post <- extract.samples( m1 )
-   eff = (1 - exp(post$bt)) * 100
-   
-   
-   library(BEST)
-   plotPost(eff)
+   plotPost( eff() )
    
 }
 
 )
 
+ ),
 
-))
+column(4,
+ renderPlot({
+
+      if( input$goButton == 0) return()
+
+     # df()
+     
+    ggplot( df() , aes( x = `50%`, y = interation )) +
+    geom_point(size=5, shape=18) +
+    geom_errorbarh(aes(xmax = `97.5%`, xmin = `2.5%`), height = 0.15) +
+    geom_vline(xintercept = 0, linetype = "longdash") +
+    labs(x="Estimated effectiveness", y="")
+    
+   })
+)
+
+, style='width: 1200px;')
 
 
 ```

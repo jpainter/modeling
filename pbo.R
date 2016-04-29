@@ -3,6 +3,7 @@
 library(rethinking)
 library(dplyr)
 library(tidyr)
+library(BEST)
 
 randomize = "district" # versus "cluster"
 num_districts = 2  
@@ -23,13 +24,13 @@ intervention = function(.clinics = clinics, .randomize = randomize) {
          
          n = floor( length( unique(districts) ) / 2)
          r = sample(districts, n)
-         intervention = ifelse( grepl( paste0(r, collapse = "|")  , districts) , 1, 0 )
+         intervention = ifelse( grepl( paste0(r, collapse = "|")  , districts) , 1L, 0L )
 
    } else if ( .randomize == "cluster") {
    
          n = floor( length(clinics) / 2)
          r = sample(clinics, n)
-         intervention = ifelse( grepl( paste0(r, collapse = "|") , clinics) , 1, 0 )
+         intervention = ifelse( grepl( paste0(r, collapse = "|") , clinics) , 1L, 0L )
    
    } else NA
    
@@ -40,9 +41,9 @@ intervention = function(.clinics = clinics, .randomize = randomize) {
       
 clinics = function(
    randomize = "district" ,
-   num_districts = 2  ,
-   n_clinics = 20  , # mean number of clinics.
-   mean_population = 2500 
+   num_districts = 2L  ,
+   n_clinics = 20L  , # mean number of clinics.
+   mean_population = 2500L 
    ){
    
    # trt = function(district) district %in% district_treatment
@@ -79,9 +80,10 @@ return(clinics_list)
 disease = function(
    clinic_list = c,
    bkrd_mean_incidence = .1  , # yearly total
-   reporting_sensitivity = .5,
-   reporting_specificity = .6,
-   percent.fever.not.malaria = .7, 
+   case.sensitivity = .5, # combination of health seeking and RDT use
+   case.specificity = .6,
+   test.positive.rate = .7, 
+   reporting.fidelity = .9,
    effectiveness = 0.1,
    period = "pre" # or "post" referring to intervention period
    
@@ -112,27 +114,26 @@ disease = function(
          mean_cases =  incidence  * population , 
          
          sensitivity = rbeta( n(), 
-                              betaShapeA( reporting_sensitivity, reporting_sensitivity/3),
-                              betaShapeB( reporting_sensitivity, reporting_sensitivity/3)
+                              betaShapeA( case.sensitivity, case.sensitivity/3),
+                              betaShapeB( case.sensitivity, case.sensitivity/3)
                               ),
          
          specificity = rbeta( n(), 
-                              betaShapeA( reporting_sensitivity, reporting_specificity/3),
-                              betaShapeB( reporting_sensitivity, reporting_specificity/3)
+                              betaShapeA( case.specificity, case.specificity/3),
+                              betaShapeB( case.specificity, case.specificity/3)
                               ) ,
          
          false_positive = 
             rpois( n(), 
-                   (1 - specificity) * (mean_cases * percent.fever.not.malaria) /
-                                    (1 - percent.fever.not.malaria) ) ,
+                   (1 - case.specificity) * mean_cases * ( (1/test.positive.rate) - 1 ) ) ,
          
          cases = as.integer(
             ifelse( trt == 1 & (period %in% "post") ,  
                     rpois(n(), 
-                          reporting_sensitivity * 
+                         reporting.fidelity * case.sensitivity * 
                                             ( mean_cases * (1-effectiveness)  + false_positive ) ),
                          rpois(n(), 
-                               reporting_sensitivity * (mean_cases  + false_positive) )
+                               reporting.fidelity * case.sensitivity * (mean_cases  + false_positive) )
          ))
       ) 
    
@@ -142,7 +143,7 @@ disease = function(
 
 
 # DATA
-c = clinics(randomize = "cluster")
+c = clinics(randomize = "cluster", num_districts = 2L )
 d = disease(c, period = 'post')
 
 # summarise clinics
@@ -173,7 +174,9 @@ pirateplot( cases ~ trt , data = d, main = "Cases by treatment group", theme.o =
  summary(mlm)
  post <- extract.samples( mlm )
  eff = (1 - exp(post$trt)) * 100
- quantile(eff)
+ # quantile(eff)
+ plotPost(eff)
+
 
 # MAP 
 
@@ -189,7 +192,7 @@ m1 = map(
       cases ~ dbinom( population, p ),
       logit(p) <- a + bt * trt ,
       a ~ dnorm( 0, 10 ),
-      bt ~ dnorm( 0 , 10)
+      bt ~ dnorm( 0 , 1)
       
       ), data = d
 )
@@ -197,49 +200,46 @@ precis(m1)
 
 post <- extract.samples( m1 )
 eff = (1 - exp(post$bt)) * 100
-options(digits = 3)
-q  = quantile(eff)
-q
-
-hist(eff)
-
-library(BEST)
 plotPost(eff)
+
 
 # MAP2STAN
  mm1 = map2stan( m1
-    , data = d, iter = 4000, chains = 4, WAIC = FALSE, cores = 4
+    , data = d, WAIC = FALSE
+    # iter = 4000, chains = 4,  cores = 4
  )
  precis(mm1)
  post <- extract.samples( mm1 )
  eff = (1 - exp(post$bt)) * 100
- quantile(eff)
+ # quantile(eff)
+ plotPost(eff)
 
 # random effects (individual intercept)
-
 m2 = 
    alist( 
       cases ~ dbinom( population, p ),
       logit(p) <- a[id] + bt * trt ,
-      a[id] ~ dnorm( 0, 10 ),
+      a[id] ~ dnorm( 0, 3 ),
       bt ~ dnorm( 0 , 10)
       
       )
 
  m2map = map( m2, data = d) # much faster
+ precis(m2map, depth = 2)
    post <- extract.samples( m2map)
    eff = (1 - exp(post$bt)) * 100
-   quantile(eff)
+   plotPost(eff)
 
 
  mm2 = map2stan( m2
-    , data = d, iter = 4000, chains = 4, WAIC = FALSE
+    , data = d, WAIC = FALSE
+    # iter = 4000, chains = 4,  cores = 4
  )
  
    precis(mm2, depth = 2)
    post <- extract.samples( mm2 )
    eff = (1 - exp(post$bt)) * 100
-   quantile(eff)
+   plotPost(eff)
 
 # fancier version...
  m2m = alist(
