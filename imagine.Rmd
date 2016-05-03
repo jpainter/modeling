@@ -2,8 +2,10 @@
 title: "Imagine"
 author: 
 date: 
-output: html_document
+output: 
+  html_document
 runtime: shiny
+css: imagine_style.css
 ---
 <style>
 body {
@@ -66,13 +68,13 @@ inputPanel(
               min = .01, max = 1, value = .6, step = .1),
   
   sliderInput("effectiveness", label = "Intervention effectiveness",
-              min = 0, max = 1, value = .1, step = .05),
+              min = 0, max = 1, value = .10, step = .05),
   
    # selectInput("period", label = "Intervention time period",
    #            choices = c("pre", "post"), selected = "post"),
   
     selectInput("randomize", label = "Intervention randomized by",
-              choices = c("cluster", "district"), selected = "district"),
+              choices = c("clinic", "district"), selected = "clinic"),
   
   actionButton("goButton", "Each press creates a trial",
                width = "100%"),
@@ -83,7 +85,7 @@ inputPanel(
   # actionButton("run", "Create a long run")
    
 ) 
-, style='width: 1200px;'
+, style='width: 1500px;'
 )
 
 
@@ -91,137 +93,11 @@ inputPanel(
 
 ```{r functions}
 
-intervention = function(.clinics = clinics, .randomize = randomize) {
-   
-   clinics = .clinics$clinic
-   districts = .clinics$district
-   
-   if ( .randomize == "district") {
-         
-         n = floor( length( unique(districts) ) / 2)
-         r = sample(districts, n)
-         intervention = ifelse( grepl( paste0(r, collapse = "|")  , districts) , 1, 0 )
-
-   } else if ( .randomize == "cluster") {
-   
-         n = floor( length(clinics) / 2)
-         r = sample(clinics, n)
-         intervention = ifelse( grepl( paste0(r, collapse = "|") , clinics) , 1, 0 )
-   
-   } else NA
-   
-   return(intervention)
-}
-
-   
-      
-clinics = function(
-   randomize = "district" ,
-   num_districts = 2  ,
-   n_clinics = 20  , # mean number of clinics.
-   mean_population = 2500 
-   ){
-   
-   # trt = function(district) district %in% district_treatment
-   
-   districts = LETTERS[1:num_districts]
-   
-   district_list = data_frame( 
-         district = unname(unlist(
-            lapply( districts, FUN = function(x){
-            rep( x, 
-                as.integer( rnorm(1, n_clinics, n_clinics/6) ) 
-               )
-            } )
-            ))
-         )
-   
-   clinics_list = district_list  %>% 
-      group_by( district ) %>%
-      mutate(
-         clinic =  letters[row_number()] ,
-         clinic = paste0( district, clinic) ,
-         population = rpois(n(), mean_population)
-         
-      ) 
-   
-   clinics_list$intervention = intervention(.clinics = clinics_list, .randomize = randomize)
-      
-   
-   clinics_list$id = as.numeric(rownames(clinics_list))
-
-return(clinics_list)
-}
-
-disease = function(
-   clinic_list = c,
-   bkrd_mean_incidence = .1  , # yearly total
-   case.sensitivity = .6,
-   case.specificity = .6,
-   test.positive.rate = .7, 
-   reporting.fidelity = .8, 
-   effectiveness = 0.1,
-   period = "post" # or "post" referring to intervention period
-   
-){
-   
-
-   betaShapeA = function(m, s){  # formulas for shape parameters from Kruschke, ch. 5, 'doing basyesian data analysis' 
-      m * ( (m*(1-m)/s^2) - 1 )
-   }
-   
-   betaShapeB = function(m, s){
-      ( 1- m) * ( (m*(1-m)/s^2) - 1 )
-   }
-   
-   disease = clinic_list  %>% 
-      group_by( district ) %>%
-      mutate(
-         
-         period = period,
-         
-         trt =  (period %in% "post") * intervention,
-
-         incidence = rbeta( n(), 
-                            betaShapeA( bkrd_mean_incidence, bkrd_mean_incidence/3),
-                            betaShapeB( bkrd_mean_incidence, bkrd_mean_incidence/3)
-         ),
-         
-         mean_cases =  incidence  * population , 
-         
-        sensitivity = rbeta( n(), 
-                              betaShapeA( case.sensitivity, case.sensitivity/3),
-                              betaShapeB( case.sensitivity, case.sensitivity/3)
-                              ),
-         
-         specificity = rbeta( n(), 
-                              betaShapeA( case.specificity, case.specificity/3),
-                              betaShapeB( case.specificity, case.specificity/3)
-                              ) ,
-         
-         false_positive = 
-            rpois( n(), 
-                   (1 - case.specificity) * mean_cases * ( (1/test.positive.rate) - 1 ) ) ,
-         
-         cases = as.integer(
-            ifelse( trt == 1 & (period %in% "post") ,  
-                    rpois(n(), 
-                         reporting.fidelity * case.sensitivity * 
-                                            ( mean_cases * (1-effectiveness)  + false_positive ) ),
-                         rpois(n(), 
-                               reporting.fidelity * case.sensitivity * (mean_cases  + false_positive) )
-         ))
-      ) 
-   
-   # disease$group = factor( disease$trt , levels = 0:1, labels = c('Control', 'Treatment') ) 
-   
-   return(disease)
-}
-
+source('imagine_clinics_disease.R')
 
 ```
 
-```{r }
+```{r data}
 # DATA
 
 c = reactive({
@@ -251,37 +127,9 @@ d = reactive({
    }
 })
 
-eff = reactive({
-   
-   # fixed effects
-   
-   m1 = map(
-      alist(
-         cases ~ dbinom( population, p ),
-         logit(p) <- a + bt * trt ,
-         a ~ dnorm( 0, 10 ),
-         bt ~ dnorm( 0 , 10)
+eff = reactive({  effect( d = d(), randomize = input$randomize ) })
 
-         ), data = as.data.frame( d() )
-   )
-   
-   # variable intercept
-   # m2 = map(
-   #    alist( 
-   #       cases ~ dbinom( population, p ),
-   #       logit(p) <- a[id] + bt * trt ,
-   #       a[id] ~ dnorm( 0, 10 ),
-   #       bt ~ dnorm( 0 , 10)
-   #       ), data = as.data.frame( d() )
-   #    )
-
-   post <- extract.samples( m1 )
-   effect = (1 - exp(post$bt)) * 100
-   
-   return(effect)
-})
-
-
+# initialize stored results for single runs...
 values <- reactiveValues(df_data = NULL)
 
 observeEvent(input$reset, {
@@ -310,12 +158,113 @@ df = reactive({
    return( values$df_data )
   })
 
-# loop 
+# calculate long run data set 
+long_run_data = reactive({ 
 
+      if( input$goButton == 0) return()
+   
+      withProgress(message = 'Making plot', value = 0, {
+      # Number of times we'll go through the loop
+
+      runs = 100
+
+      for ( i in 1:runs){
+
+            c = clinics(
+                 randomize = input$randomize,
+                 num_districts = input$num_districts  ,
+                 n_clinics = input$n_clinics  ,
+                 mean_population = input$mean_population
+                 )
+
+            d = disease(
+                 clinic_list = c,
+                 bkrd_mean_incidence = input$bkrd_mean_incidence  ,
+                 case.sensitivity = input$case.sensitivity ,
+                 case.specificity = input$case.specificity ,
+                 test.positive.rate =  input$test.positive.rate ,
+                 reporting.fidelity = input$reporting.fidelity,
+                 effectiveness = input$effectiveness
+                 # period = input$period
+                 )
+
+
+               # if (input$randomize %in% 'district'){
+               # 
+               #    m1 = alist(
+               #       cases ~ dbinom( population, p ),
+               #       logit(p) <- a[district_id] + bt * trt ,
+               #       a[district_id] ~ dnorm( 0, 10 ),
+               #       bt ~ dnorm( 0 , 10)
+               #       )
+               # 
+               # } 
+            
+               # same model, fixed intercept, for randomized by clinic or district
+                   m1 = alist(
+                     cases ~ dbinom( population, p ),
+                     logit(p) <- a + bt * trt ,
+                     a ~ dnorm( 0, 10 ),
+                     bt ~ dnorm( 0 , 10)
+                     )
+
+
+         eff =   map( m1,
+                      start=list(a=0, bt=0),
+                      data = as.data.frame( d )
+                      )
+
+         post <- extract.samples( eff )
+         effect = (1 - exp(post$bt)) * 100
+
+      temp <- bind_cols(
+         data.frame( interation = i ) ,
+         as.data.frame( t(quantile(effect, probs = seq(.025, .975, .475) )) )
+      )
+
+      if( i == 1 ){
+
+         df_data <- temp
+
+      } else {
+
+         temp2 = df_data
+         df_data <- bind_rows( temp2 , temp )
+      }
+
+      }
+
+      return(df_data)
+
+      # Increment the progress bar, and update the detail text.
+      incProgress(1/runs, detail = paste("Doing part", i))
+      }) # end withProgress
+
+   })
+
+long_run_data_summary = reactive({
+    
+   if( input$goButton == 0) return() 
+   
+   s = long_run_data() %>% 
+      summarise(
+         `% significant` = sum( ifelse( `2.5%`>0 | `97.5%`<0, 1, 0) ),
+         `% sig positive` = sum( ifelse( `2.5%`>0 , 1, 0) ),
+         `% sig negative` = sum( ifelse( `97.5%`<0, 1, 0) ),
+         `mean of medians` = mean( `50%` )
+      )
+   
+   return(s)
+})
+
+```
+
+
+```{r display}
 # summarise results
- tabsetPanel(
+tabsetPanel(
 
-    tabPanel("Random Trial", 
+tabPanel("Random Trial", 
 fluidRow(
    
 column(4, 
@@ -348,11 +297,11 @@ renderTable({
 }),
 
 renderPlot({
-   
+
    if( input$goButton == 0) return()
-   
+
    plotPost( eff() )
-   
+
 }
 
 )
@@ -378,75 +327,42 @@ column(4,
 , style='width: 1200px;')
 ),
 
-tabPanel("Long Run", 
-             
+tabPanel("Example dataset", 
+         renderTable( d()  )
+) ,
+
+tabPanel("Long Run", id = "longrun", 
+         
+
    renderPlot({
-
-      if( input$goButton == 0) return()
-   
-      run = 50
-      for ( i in 1:run){
-         
-            c = clinics(
-                 randomize = input$randomize,
-                 num_districts = input$num_districts  ,
-                 n_clinics = input$n_clinics  , 
-                 mean_population = input$mean_population 
-                 )
-            
-            d = disease(
-                 clinic_list = c,
-                 bkrd_mean_incidence = input$bkrd_mean_incidence  ,
-                 case.sensitivity = input$case.sensitivity ,
-                 case.specificity = input$case.specificity ,
-                 test.positive.rate =  input$test.positive.rate ,
-                 reporting.fidelity = input$reporting.fidelity, 
-                 effectiveness = input$effectiveness
-                 # period = input$period
-                 )
-            
-            eff =  m1 = map(
-            alist(
-               cases ~ dbinom( population, p ),
-               logit(p) <- a + bt * trt ,
-               a ~ dnorm( 0, 10 ),
-               bt ~ dnorm( 0 , 10)
       
-               ), data = as.data.frame( d )
-         )
-         
-         post <- extract.samples( m1 )
-         effect = (1 - exp(post$bt)) * 100
-      
-      temp <- bind_cols(
-         data.frame( interation = i ) ,
-         as.data.frame( t(quantile(effect, probs = seq(.025, .975, .475) )) )
-      )
+   if( input$goButton == 0) return()
 
-      if( i == 1 ){
-
-         df_data <- temp
-
-      } else {
-
-         temp2 = df_data
-         df_data <- bind_rows( temp2 , temp )
-      }
-   }
-
-    
-    ggplot( df_data %>% arrange(-`50%`) %>% mutate( order = row_number()), 
+    ggplot( long_run_data() %>% arrange(-`50%`) %>% mutate( order = row_number()),
             aes( x = `50%`, y = order )) +
-    geom_point(size=5, shape=18) +
+    geom_point(size=3, shape=18) +
     geom_errorbarh(aes(xmax = `97.5%`, xmin = `2.5%`), height = 0.15) +
     geom_vline(xintercept = 0, linetype = "longdash") +
-    labs(x="Estimated effectiveness", y="")
-    
-   })
-           
-           
-    )
- )
+    geom_vline(xintercept = input$effectiveness * 100, color = "green") +
+    labs(x="Estimated effectiveness (median and 95% credible interval)", y="")
 
 
+    }),
+   
+   renderTable( long_run_data_summary() )
+   ),
+
+tabPanel("Equations", 
+         
+         renderText({ "coming soon" })
+         
+         ),
+
+tabPanel("Explanations",
+         
+         includeMarkdown("imagine_explanations.md")
+
+)
+)
+         
 ```

@@ -192,7 +192,7 @@ m1 = map(
       cases ~ dbinom( population, p ),
       logit(p) <- a + bt * trt ,
       a ~ dnorm( 0, 10 ),
-      bt ~ dnorm( 0 , 1)
+      bt ~ dnorm( 0 , 10)
       
       ), data = d
 )
