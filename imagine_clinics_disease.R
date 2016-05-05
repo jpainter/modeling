@@ -6,7 +6,9 @@
 # library(tidyr)
 # library(BEST) # for posterior plot
 
-intervention = function(.clinics = clinics, .randomize = randomize) {
+intervention = function(
+   .clinics = clinics, 
+   .randomize = randomize) {
    
    clinics = .clinics$clinic
    districts = .clinics$district
@@ -19,7 +21,7 @@ intervention = function(.clinics = clinics, .randomize = randomize) {
 
    } else if ( .randomize == "clinic") {
    
-         n = floor( length(clinics) / 2)
+         n = floor( length( unique(clinics)) / 2)
          r = sample(clinics, n)
          intervention = ifelse( grepl( paste0(r, collapse = "|") , clinics) , 1L, 0L )
    
@@ -46,9 +48,10 @@ clinics = function(
          district = unname(unlist(
             lapply( districts, FUN = function(x){
             rep( x, 
-                 atLeast(
-                    as.integer( rnorm(1, n_clinics, n_clinics/3) ),
-                    2)
+                 n_clinics
+                 # atLeast(
+                 #    as.integer( rnorm(1, n_clinics, n_clinics/3) ),
+                 #    2)
                )
             } )
             ))
@@ -58,8 +61,9 @@ clinics = function(
       group_by( district ) %>%
       mutate(
          clinic =  letters[row_number()] ,
-         clinic = paste0( district, clinic) ,
-         population = round( rnorm(n(), mean_population, mean_population/6) )
+         district_clinic = paste0( district, clinic) ,
+         population = mean_population
+            # round( rnorm(n(), mean_population, mean_population/6) )
          
       ) 
    
@@ -79,10 +83,10 @@ disease = function(
    test.positive.rate = .7,
    reporting.fidelity = .8,
    effectiveness = 0,
-   period = "post" # or "post" referring to intervention period
-   
+   .period = "post" # or "post" referring to intervention period
+
 ){
-   
+
 # calculate beta shape parameters based on mean (m) and number of observations (n)
    betaShapeA = function(m, n=100){  # formulas for shape parameters from Kruschke, ch. 5, 'doing basyesian data analysis'
       m*n  # m = mean (e.g. .5), n = number observations--strength of data
@@ -93,22 +97,26 @@ disease = function(
       (1-m)*n
       # ( 1- m) * ( (m*(1-m)/(s^2)) - 1 )
    }
-   
+
    disease = clinic_list  %>% as.data.frame() %>% # as.data.frame removes prior grouping
       mutate(
          district_id = coerce_index(district),
-         clinic_id = coerce_index(clinic)) %>%
+         clinic_id = coerce_index(clinic),
+         period = .period
+
+         ) %>%
 
       group_by( district ) %>%
 
       mutate(
 
-         trt =  (period %in% "post") * intervention,
+         trt =  intervention,
 
-         incidence = rbeta( n(),
-                            betaShapeA( bkrd_mean_incidence, 100),
-                            betaShapeB( bkrd_mean_incidence,  100)
-         ),
+         incidence = bkrd_mean_incidence ,
+         #    rbeta( n(),
+         #                    betaShapeA( bkrd_mean_incidence, 100),
+         #                    betaShapeB( bkrd_mean_incidence,  100)
+         # ),
 
          mean_cases =  incidence  * population ,
 
@@ -137,44 +145,51 @@ disease = function(
       )
 
    disease$group = factor( disease$trt , levels = 0:1, labels = c('Control', 'Treatment') )
-   
+
    return(disease)
 }
 
-effect = function( d, randomize = 'district' ){
+effect = function( 
+   d, 
+   .analysis = 'randomized' ){
    
-   # fixed effects
-   # models
-   if (randomize %in% 'district'){ # random district
+       # randomize
+      if ( .analysis %in% "randomized"){
+         
+         m1 = alist(
+            cases ~ dbinom( population, p ),
+            logit(p) <- a + bt * trt ,
+            a ~ dnorm(0, 1),
+            bt ~ dnorm(0, 1)
+         )
+         
+         data = d %>% as.data.frame() %>%
+            filter( period %in% "post") %>%
+            select(
+               population, cases, trt
+            ) 
+         
+      } else if ( .analysis %in% "pre-post"){
+         
+         # pre-post
+         m1 = alist(
+            cases ~ dbinom( population, p ),
+            logit(p) <- a + (bt * trt) + (bperiod * time) + (binter * trt * time) ,
+            a ~ dnorm(0, 3),
+            bt ~ dnorm(0, 1),
+            bperiod ~ dnorm(0, 1),
+            binter ~ dnorm(0, 1)
+         )
+         
+         data = d %>% as.data.frame() %>%
+            select(
+               population, cases, trt, period
+            ) %>% 
+            mutate(
+               time = c(0,1)[ factor( period, levels = c("pre", "post") )]
+            )
+      }
       
-      m1 = alist(
-         cases ~ dbinom( population, p ),
-         logit(p) <- a[clinic_id] + bt * trt ,
-         a[clinic_id] ~ dnorm( 0, 10 ),
-         bt ~ dnorm( 0 , 10)
-      )  
-      
-      data = d %>% as.data.frame() %>%
-         select(
-            population, cases, trt, clinic_id
-         ) 
-      
-   } else if (randomize %in% 'clinic') {  # random cluster
-      
-      m1 = alist(
-         cases ~ dbinom( population, p ),
-         logit(p) <- a + bt * trt ,
-         a ~ dnorm(0, 10),
-         bt ~ dnorm(0, 10)
-      )
-      
-      data = d %>% as.data.frame() %>%
-         select(
-            population, cases, trt
-         ) 
-      
-   }
-   
    # run models
    eff =   map( m1,
                 start=list( a= 0, bt=0),
@@ -183,7 +198,16 @@ effect = function( d, randomize = 'district' ){
    
    # extract posterior; calculate effect
    post <- extract.samples( eff )
-   effect = (1 - exp(post$bt)) * 100
+   
+   
+   if ( .analysis %in% "randomized"){ 
+      # randomize 
+      effect = (1 - exp(post$bt)) * 100
+      
+      } else if ( .analysis %in% "pre-post"){
+         # pre-post
+         effect = (1 - exp(post$binter)) * 100
+         }
    
    return(effect)
 }
@@ -192,10 +216,28 @@ effect = function( d, randomize = 'district' ){
 
 # DATA
 # c = clinics(randomize = "clinic" )
-# d = disease(c, period = 'post', effectiveness = 0)
-# View(d)
-
-# e = effect( d = d , randomize = "clinic")
+# View(c) 
+# 
+# d = bind_rows( disease(c, .period = 'pre', effectiveness = 0) )
+# d = bind_rows( disease(c, .period = 'post', effectiveness = 0) )
+#                
+# d = bind_rows( disease(c, .period = 'pre', effectiveness = 0),
+#                disease(c, .period = 'post', effectiveness = 0) )
+# # View(d)
+# 
+# d %>% group_by(trt, period ) %>% arrange(trt, desc(period) ) %>%
+#   summarise( 
+#      `no.clinics` = n(),
+#      `population` = mean(population),
+#      `bkrnd incidence` = mean(incidence),
+#      `sensitivity`= mean(sensitivity),
+#      `specificity`= mean(specificity),
+#      `cases`= round( mean(cases), 1 ) )
+# 
+# e = effect( d = d , .analysis = 'randomized')
+# plotPost( e )
+# 
+# e = effect( d = d , .analysis = 'pre-post')
 # plotPost( e )
 
  
