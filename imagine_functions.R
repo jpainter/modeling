@@ -3,6 +3,7 @@
 
 library(ggthemes)
 library(ggplot2)
+library(scales)
 library(rethinking)
 library(dplyr)
 library(tidyr)
@@ -157,6 +158,14 @@ disease = function(
 effect = function( 
    d, 
    .analysis = 'randomized' ){
+      
+   # if (.analysis %in% 'glm'){
+   #    
+   #    linmod = glm( cases ~ trt, family = poisson, data = d)
+   #    post <- extract.samples( linmod )
+   #    effect = (1 - exp(post$trt)) * 100
+   #    return(effect)
+   # }
    
        # randomize
       if ( .analysis %in% "randomized"){
@@ -173,6 +182,11 @@ effect = function(
             select(
                population, cases, trt
             ) 
+         
+         linmod = glm( cases ~ trt, family = poisson, data = data)
+         post <- extract.samples( linmod )
+         effect = (1 - exp(post$trt)) * 100
+         return(effect)
          
       } else if ( .analysis %in% "pre-post"){
          
@@ -192,7 +206,14 @@ effect = function(
             ) %>% 
             mutate(
                time = c(0,1)[ factor( period, levels = c("pre", "post") )]
-            )
+            ) %>% 
+            select(-period)
+         
+         linmod = glm( cases ~ trt + time + trt*time, family = poisson, data = data)
+         post <- extract.samples( linmod )
+         effect = (1 - exp(post$`trt:time`)) * 100
+         return(effect)
+      
       }
       
    # run models
@@ -217,60 +238,3 @@ effect = function(
    return(effect)
 }
 
-# Testing - 
-
-# DATA
-# c = clinics(randomize = "clinic", n_clinics = 50)
-# c %>% group_by(district, intervention) %>% summarise( n = n())
-
-# View(c)
-# 
-# d = bind_rows( disease(c, .period = 'pre', effectiveness = 0) )
-# d = bind_rows( disease(c, .period = 'post', effectiveness = 0) )
-# 
-# d = bind_rows( disease(c, .period = 'pre', effectiveness = 0),
-#                disease(c, .period = 'post', effectiveness = 0) )
-# # View(d)
-# 
-# d %>% group_by(trt, period ) %>% arrange(trt, desc(period) ) %>%
-#   summarise(
-#      `no.clinics` = n(),
-#      `population` = mean(population),
-#      `bkrnd incidence` = mean(incidence),
-#      `sensitivity`= mean(sensitivity),
-#      `specificity`= mean(specificity),
-#      `cases`= round( mean(cases), 1 ) )
-# 
-# plot( cases ~ factor(trt), data = d,
-#       main = "Cases by treatment group", theme.o = 3, point.o = .7, hdi.o = .5,
-#       bar.o = 0 )
-# 
-# library(lattice)
-# d$trt.f = factor(d$trt, levels = 0:1, labels = c('control', 'treatment'))
-# d$period.f = factor(d$period, levels = c("pre", "post"))
-# bwplot( cases ~ period.f|trt.f, data = d,
-#         main = "Cases by treatment group", 
-#         layout=(c(1,2)) )
-
-# ggplot( data = d ) +
-#    geom_boxplot( aes( x = period, y = cases, group = period)) +
-#    facet_grid( trt ~ .) + 
-#    theme_tufte()
-
-
-# e = effect( d = d , .analysis = 'randomized')
-# plotPost( e )
-# 
-# e = effect( d = d , .analysis = 'pre-post')
-# plotPost( e )
-
- 
-# # summarise clinics
-# d %>% summarise( n_clinics = n() )
-# d %>% group_by(trt) %>% summarise( cases = mean(cases))
-
-
-# pirate plots
-# install.packages("devtools") # Only if you don't have the devtools library already installed
-# library("devtools")
-# install_github("ndphillips/yarrr")

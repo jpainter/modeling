@@ -17,6 +17,8 @@ body {
 knitr::opts_chunk$set(echo = FALSE)
 library(knitr)
 
+library(ggthemes)
+library(ggplot2)
 library(rethinking)
 library(dplyr)
 library(tidyr)
@@ -44,31 +46,31 @@ fluidPage(theme = shinytheme("flatly"),
 inputPanel(
 
   sliderInput("num_districts", label = "Number of districts",
-              min = 2, max = 60, value = 2, step = 1),
+              min = 2, max = 60, value = 2, step = 1, ticks = FALSE),
   
   sliderInput("n_clinics", label = "Number of clinics",
-              min = 2, max = 60, value = 30, step = 5),
+              min = 2, max = 60, value = 30, step = 5, ticks = FALSE),
   
-  sliderInput("mean_population", label = "Average clinic catchment size",
-              min = 1000, max = 10000, value = 2500, step = 500),
+  sliderInput("mean_population", label = "Average clinic size",
+              min = 1000, max = 10000, value = 2500, step = 500, ticks = FALSE),
   
-  sliderInput("bkrd_mean_incidence", label = "Average incidence per annum",
-              min = .01, max = 1, value = .3, step = .1),
+  sliderInput("bkrd_mean_incidence", label = "Average incidence / annum",
+              min = .01, max = 1, value = .3, step = .1, ticks = FALSE),
   
   sliderInput("case.sensitivity", label = "Case detection sensitivity",
-              min = .01, max = 1, value = 1, step = .1),
+              min = .01, max = 1, value = 1, step = .1, ticks = FALSE),
   
    sliderInput("case.specificity", label = "Case detection specifiicty",
-              min = .01, max = 1, value = 1, step = .1),
+              min = .01, max = 1, value = 1, step = .1, ticks = FALSE),
 
    sliderInput("test.positive.rate", label = "Test positive rate",
-              min = .01, max = 1, value = .5, step = .1),
+              min = .01, max = 1, value = .5, step = .1, ticks = FALSE),
   
   sliderInput("reporting.fidelity", label = "Reporting fidelity",
-              min = .01, max = 1, value = 1, step = .1),
+              min = .01, max = 1, value = 1, step = .1, ticks = FALSE),
   
   sliderInput("effectiveness", label = "Intervention effectiveness",
-              min = 0, max = 1, value = 0, step = .05),
+              min = 0, max = 1, value = 0, step = .05, ticks = FALSE),
   
    selectInput("randomize", label = "Intervention randomized by",
               choices = c("clinic", "district"), selected = "clinic"),
@@ -79,7 +81,10 @@ inputPanel(
   actionButton("goButton", "Each press creates a trial",
                width = "100%"),
 
-  actionButton("reset", "Clear")
+  actionButton("reset", "Clear"),
+  
+  selectInput("runs", label = "Number of runs",
+              choices = c(100,1000,10000), selected = 100)
 
    
 ) 
@@ -91,7 +96,7 @@ inputPanel(
 
 ```{r functions}
 
-source('imagine_clinics_disease.R')
+source('imagine_functions.R')
 
 ```
 
@@ -114,28 +119,43 @@ d = reactive({
    if( input$goButton > 0){
       
    c =  isolate( c() )
-   d = bind_rows(
-      disease(
-           clinic_list = c,
-           bkrd_mean_incidence = input$bkrd_mean_incidence  ,
-           case.sensitivity = input$case.sensitivity ,
-           case.specificity = input$case.specificity ,
-           test.positive.rate =  input$test.positive.rate ,
-           reporting.fidelity = input$reporting.fidelity, 
-           effectiveness = input$effectiveness,
-           .period = 'pre'
-           ), 
-      disease(
-           clinic_list = c,
-           bkrd_mean_incidence = input$bkrd_mean_incidence  ,
-           case.sensitivity = input$case.sensitivity ,
-           case.specificity = input$case.specificity ,
-           test.positive.rate =  input$test.positive.rate ,
-           reporting.fidelity = input$reporting.fidelity, 
-           effectiveness = input$effectiveness,
-           .period = 'post'
-           )
-   )
+   
+   if ( input$analysis %in% "pre-post"){ 
+      d = bind_rows(
+         disease(
+              clinic_list = c,
+              bkrd_mean_incidence = input$bkrd_mean_incidence  ,
+              case.sensitivity = input$case.sensitivity ,
+              case.specificity = input$case.specificity ,
+              test.positive.rate =  input$test.positive.rate ,
+              reporting.fidelity = input$reporting.fidelity, 
+              effectiveness = input$effectiveness,
+              .period = 'pre'
+              ), 
+         disease(
+              clinic_list = c,
+              bkrd_mean_incidence = input$bkrd_mean_incidence  ,
+              case.sensitivity = input$case.sensitivity ,
+              case.specificity = input$case.specificity ,
+              test.positive.rate =  input$test.positive.rate ,
+              reporting.fidelity = input$reporting.fidelity, 
+              effectiveness = input$effectiveness,
+              .period = 'post'
+              )
+      )
+      
+   } else {
+      d = disease(
+              clinic_list = c,
+              bkrd_mean_incidence = input$bkrd_mean_incidence  ,
+              case.sensitivity = input$case.sensitivity ,
+              case.specificity = input$case.specificity ,
+              test.positive.rate =  input$test.positive.rate ,
+              reporting.fidelity = input$reporting.fidelity, 
+              effectiveness = input$effectiveness,
+              .period = 'post'
+              )
+   }
       return(d)
 }
 })
@@ -184,7 +204,7 @@ long_run_data = reactive({
       withProgress(message = 'Making plot', value = 0, {
       # Number of times we'll go through the loop
 
-      runs = 100
+      runs = input$runs
 
       for ( i in 1:runs){
 
@@ -251,9 +271,9 @@ long_run_data_summary = reactive({
    
    s = long_run_data() %>% 
       summarise(
-         `% significant` = sum( ifelse( `2.5%`>0 | `97.5%`<0, 1, 0) ),
-         `% sig positive` = sum( ifelse( `2.5%`>0 , 1, 0) ),
-         `% sig negative` = sum( ifelse( `97.5%`<0, 1, 0) ),
+         `% significant` = 100* sum( ifelse( `2.5%`>0 | `97.5%`<0, 1, 0) )/n(),
+         `% sig positive` = 100 * sum( ifelse( `2.5%`>0 , 1, 0) )/n(),
+         `% sig negative` = 100 * sum( ifelse( `97.5%`<0, 1, 0) )/n(),
          `mean of medians` = mean( `50%` )
       )
    
@@ -279,22 +299,58 @@ column(4,
       # pirateplot( cases ~ trt , data = d(), main = "Malaria cases at each clinic, by treatment group",
       #             theme.o = 3, point.o = .7, hdi.o = .5, bar.o = 0 )
 
-   plot( cases ~ factor(trt), data = d(),
-         main = "Cases by treatment group", theme.o = 3, point.o = .7, hdi.o = .5,
-         bar.o = 0 )
+   # plot( cases ~ factor(trt), data = d(),
+   #       main = "Cases by treatment group", theme.o = 3, point.o = .7, hdi.o = .5,
+   #       bar.o = 0 )
+
+   
+   # bwplot( cases ~ period.f|trt.f, data = d(),
+   #         main = "Cases by treatment group", 
+   #         layout=(c(1,2)) )
+   
+   ggplot( data = d() ) +
+   geom_boxplot( aes( x = period.f, y = cases, group = period.f)) +
+   facet_grid( trt.f ~ .) + 
+   labs( x = 'Period', y = 'Cases') +
+   theme_tufte()
+
    
    }),
  
  renderTable({
-  d() %>% group_by(trt, period ) %>% arrange(trt, desc(period) ) %>%
-  summarise( 
-     `no.clinics` = n(),
-     `population` = mean(population),
-     `bkrnd incidence` = mean(incidence),
-     `sensitivity`= mean(sensitivity),
-     `specificity`= mean(specificity),
-     `cases`= round( mean(cases), 1 ) )
+    
+   if( input$goButton == 0) return()
+    
+  # d() %>% group_by(trt.f, period.f ) %>% arrange(trt.f, desc(period.f) ) %>%
+  # summarise( 
+  #    `no.clinics` = n(),
+  #    `population` = mean(population),
+  #    `bkrnd incidence` = mean(incidence),
+  #    `sensitivity`= mean(sensitivity),
+  #    `specificity`= mean(specificity),
+  #    `cases`= round( mean(cases), 1 ) )
 
+      
+     if ( input$analysis %in% "pre-post"){
+        d = d() %>%
+        group_by( trt.f, period.f) 
+     } else {
+        d = d() %>% group_by( trt.f) 
+     } 
+    
+   d = d %>%
+   summarise( 
+   n = n(),
+   pop = sum(population), 
+   total.cases = sum(cases),
+   mean.cases = mean(cases)
+) %>%
+   mutate(
+      dif = percent( ( lag(mean.cases, n = 1) - mean.cases ) / lag(mean.cases, n = 1) )
+   )
+   
+   return(d)
+  
 })
 
 ),
@@ -320,9 +376,8 @@ column(4,
     geom_point(size=5, shape=18) +
     geom_errorbarh(aes(xmax = `97.5%`, xmin = `2.5%`), height = 0.15) +
     geom_vline(xintercept = 0, linetype = "longdash") +
-    scale_x_continuous(  breaks = seq(-50, 50, 10) ) +
-    xlim( -60, 60 ) + 
-    labs(x = "Estimated effectiveness", y="")
+    scale_x_continuous( "Estimated effectiveness", limits = seq(-60,60, 120), breaks = seq(-50, 50, 10) ) +
+    labs(y="")
     
    })
 )
@@ -347,9 +402,9 @@ tabPanel("Long Run", id = "longrun",
     geom_errorbarh(aes(xmax = `97.5%`, xmin = `2.5%`), height = 0.15) +
     geom_vline(xintercept = 0, linetype = "longdash") +
     geom_vline(xintercept = input$effectiveness * 100, color = "green") +
-    scale_x_continuous(  breaks = seq(-50, 50, 10) ) +
-    xlim( -60, 60 ) + 
-    labs(x="Estimated effectiveness (median and 95% credible interval)", y="")
+    scale_x_continuous("Estimated effectiveness (median and 95% credible interval)", 
+                       limits = seq(-60,60, 120), breaks = seq(-50, 50, 10) ) +
+    labs(y="")
 
 
     }),
