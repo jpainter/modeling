@@ -75,16 +75,27 @@ inputPanel(
    selectInput("randomize", label = "Intervention randomized by",
               choices = c("clinic", "district"), selected = "clinic"),
   
-   selectInput("analysis", label = "Analyis design",
-              choices = c("randomized", "pre-post"), selected = "randomized"),
+   selectInput("design", label = "study design",
+              choices = c("randomized", "pre-post", "interrupted time-series"),
+              selected = "randomized"),
+  
+  selectInput("analyze", label = "Analyze as",
+              choices = c("randomized", "pre-post", "interrupted time-series"),
+              selected = "randomized"),
   
   actionButton("goButton", "Each press creates a trial",
                width = "100%"),
 
   actionButton("reset", "Clear"),
   
+  checkboxInput("var_clinics", "vary number of clinics", FALSE ),
+  
+  checkboxInput("var_pop", "vary population", FALSE ),
+  
+  checkboxInput("var_incidence", "vary incidence", FALSE ),
+  
   selectInput("runs", label = "Number of runs",
-              choices = c(100,1000,10000), selected = 100)
+              choices = c(100, 500, 1000, 5000, 10000), selected = 100)
 
    
 ) 
@@ -110,7 +121,9 @@ c = reactive({
            randomize = input$randomize,
            num_districts = input$num_districts  ,
            n_clinics = input$n_clinics  , 
-           mean_population = input$mean_population 
+           mean_population = input$mean_population ,
+           var_clinics = input$var_clinics,
+           var_pop = input$var_pop
            )
       }
 })
@@ -118,53 +131,38 @@ c = reactive({
 d = reactive({
    if( input$goButton > 0){
       
-   c =  isolate( c() )
+  c =   c() 
    
-   if ( input$analysis %in% "pre-post"){ 
-      d = bind_rows(
-         disease(
-              clinic_list = c,
+  # d = study_data(clinic_list = c, design = input$design)
+   
+   d = study_data( design = input$design,
+                   clinic_list = c,
               bkrd_mean_incidence = input$bkrd_mean_incidence  ,
               case.sensitivity = input$case.sensitivity ,
               case.specificity = input$case.specificity ,
               test.positive.rate =  input$test.positive.rate ,
-              reporting.fidelity = input$reporting.fidelity, 
+              reporting.fidelity = input$reporting.fidelity,
               effectiveness = input$effectiveness,
-              .period = 'pre'
-              ), 
-         disease(
-              clinic_list = c,
-              bkrd_mean_incidence = input$bkrd_mean_incidence  ,
-              case.sensitivity = input$case.sensitivity ,
-              case.specificity = input$case.specificity ,
-              test.positive.rate =  input$test.positive.rate ,
-              reporting.fidelity = input$reporting.fidelity, 
-              effectiveness = input$effectiveness,
-              .period = 'post'
-              )
-      )
-      
-   } else {
-      d = disease(
-              clinic_list = c,
-              bkrd_mean_incidence = input$bkrd_mean_incidence  ,
-              case.sensitivity = input$case.sensitivity ,
-              case.specificity = input$case.specificity ,
-              test.positive.rate =  input$test.positive.rate ,
-              reporting.fidelity = input$reporting.fidelity, 
-              effectiveness = input$effectiveness,
-              .period = 'post'
-              )
-   }
+              var_incidence = input$var_incidence
+)
+
       return(d)
+   
 }
 })
 
+observeEvent(input$design, {
+   
+    updateSelectInput( session, "analyze", 
+                       # choices = c("randomized", "pre-post", "interrupted time-series"),
+                       selected = isolate(input$design)
+                       )
+  }) 
 
 eff = reactive({  
       if( input$goButton > 0){
          
-         effect( d = d() , .analysis = input$analysis )
+         effect( d = d() , design = input$analyze )
    }})
 
 # initialize stored results for single runs...
@@ -200,6 +198,7 @@ df = reactive({
 long_run_data = reactive({ 
 
       if( input$goButton == 0) return()
+      # if( !input$longrun ) return()
    
       withProgress(message = 'Making plot', value = 0, {
       # Number of times we'll go through the loop
@@ -209,36 +208,26 @@ long_run_data = reactive({
       for ( i in 1:runs){
 
             c = clinics(
-                 randomize = input$randomize,
-                 num_districts = input$num_districts  ,
-                 n_clinics = input$n_clinics  ,
-                 mean_population = input$mean_population
-                 )
-
-            d = bind_rows(
-                  disease(
-                       clinic_list = c(),
-                       bkrd_mean_incidence = input$bkrd_mean_incidence  ,
-                       case.sensitivity = input$case.sensitivity ,
-                       case.specificity = input$case.specificity ,
-                       test.positive.rate =  input$test.positive.rate ,
-                       reporting.fidelity = input$reporting.fidelity, 
-                       effectiveness = input$effectiveness,
-                       .period = 'pre'
-                       ), 
-                  disease(
-                       clinic_list = c(),
-                       bkrd_mean_incidence = input$bkrd_mean_incidence  ,
-                       case.sensitivity = input$case.sensitivity ,
-                       case.specificity = input$case.specificity ,
-                       test.positive.rate =  input$test.positive.rate ,
-                       reporting.fidelity = input$reporting.fidelity, 
-                       effectiveness = input$effectiveness,
-                       .period = 'post'
-                       )
+               randomize = input$randomize,
+               num_districts = input$num_districts  ,
+               n_clinics = input$n_clinics  , 
+               mean_population = input$mean_population ,
+               var_clinics = input$var_clinics,
+               var_pop = input$var_pop
                )
+
+            d = study_data( design = input$design,
+                   clinic_list = c,
+              bkrd_mean_incidence = input$bkrd_mean_incidence  ,
+              case.sensitivity = input$case.sensitivity ,
+              case.specificity = input$case.specificity ,
+              test.positive.rate =  input$test.positive.rate ,
+              reporting.fidelity = input$reporting.fidelity,
+              effectiveness = input$effectiveness,
+              var_incidence = input$var_incidence
+)
             
-         eff = effect( d = d , .analysis = input$analysis) # 
+         eff = effect( d = d , design = input$design) # 
 
       temp <- bind_cols(
          data.frame( interation = i ) ,
@@ -268,6 +257,7 @@ long_run_data = reactive({
 long_run_data_summary = reactive({
     
    if( input$goButton == 0) return() 
+   # if( !input$longrun ) return()
    
    s = long_run_data() %>% 
       summarise(
@@ -309,12 +299,12 @@ column(4,
    #         layout=(c(1,2)) )
    
    ggplot( data = d() ) +
-   geom_boxplot( aes( x = period.f, y = cases, group = period.f)) +
+   geom_boxplot( aes( x = period.f, y = cases, group = period)) +
    facet_grid( trt.f ~ .) + 
    labs( x = 'Period', y = 'Cases') +
-   theme_tufte()
+   theme_tufte() +
+      theme( axis.ticks = element_blank() )
 
-   
    }),
  
  renderTable({
@@ -331,7 +321,7 @@ column(4,
   #    `cases`= round( mean(cases), 1 ) )
 
       
-     if ( input$analysis %in% "pre-post"){
+     if ( input$design %in% "pre-post"){
         d = d() %>%
         group_by( trt.f, period.f) 
      } else {
@@ -390,8 +380,7 @@ tabPanel("Example dataset",
 ) ,
 
 tabPanel("Long Run", id = "longrun", 
-         
-
+      
    renderPlot({
       
    if( input$goButton == 0) return()
@@ -410,6 +399,7 @@ tabPanel("Long Run", id = "longrun",
     }),
    
    renderTable( long_run_data_summary() )
+
    ),
 
 tabPanel("Equations", 

@@ -37,7 +37,9 @@ clinics = function(
    randomize = "clinic" ,
    num_districts = 2  ,
    n_clinics = 30  , # mean number of clinics.
-   mean_population = 2500L 
+   mean_population = 2500L ,
+   var_clinics = FALSE,
+   var_pop = FALSE
    ){
    
    # trt = function(district) district %in% district_treatment
@@ -52,10 +54,12 @@ clinics = function(
          district = unname(unlist(
             lapply( districts, FUN = function(x){
             rep( x, 
+                 ifelse( var_clinics, 
+                         atLeast( as.integer( rnorm(1, n_clinics, n_clinics/3) ),
+                                  2),
+                 
                  n_clinics
-                 # atLeast(
-                 #    as.integer( rnorm(1, n_clinics, n_clinics/3) ),
-                 #    2)
+               )
                )
             } )
             ))
@@ -66,9 +70,10 @@ clinics = function(
       mutate(
          clinic =  as.character( row_number() ),
          district_clinic = paste0( district, clinic) ,
-         population = mean_population
-            # round( rnorm(n(), mean_population, mean_population/6) )
-         
+         population = ifelse( var_pop, 
+                              round( rnorm(n(), mean_population, mean_population/6) ),
+                              mean_population
+         )
       ) 
    
    clinics_list$intervention = intervention(.clinics = clinics_list, .randomize = randomize)
@@ -78,18 +83,6 @@ clinics = function(
 
 return(clinics_list)
 }
-
-disease = function(
-   clinic_list = c,
-   bkrd_mean_incidence = .1  , # yearly total
-   case.sensitivity = 1,
-   case.specificity = 1,
-   test.positive.rate = 1,
-   reporting.fidelity = 1,
-   effectiveness = 0,
-   .period = "post" # or "post" referring to intervention period
-
-){
 
 # calculate beta shape parameters based on mean (m) and number of observations (n)
    betaShapeA = function(m, n=100){  # formulas for shape parameters from Kruschke, ch. 5, 'doing basyesian data analysis'
@@ -101,6 +94,18 @@ disease = function(
       (1-m)*n
       # ( 1- m) * ( (m*(1-m)/(s^2)) - 1 )
    }
+   
+disease = function(
+   clinic_list = c,
+   bkrd_mean_incidence = .1  , # yearly total
+   case.sensitivity = 1,
+   case.specificity = 1,
+   test.positive.rate = 1,
+   reporting.fidelity = 1,
+   effectiveness = 0,
+   var_incidence = FALSE, 
+   .period = ""
+){
 
    disease = clinic_list  %>% as.data.frame() %>% # as.data.frame removes prior grouping
       mutate(
@@ -115,12 +120,14 @@ disease = function(
       mutate(
 
          trt =  intervention,
-
-         incidence = bkrd_mean_incidence ,
-         #    rbeta( n(),
-         #                    betaShapeA( bkrd_mean_incidence, 100),
-         #                    betaShapeB( bkrd_mean_incidence,  100)
-         # ),
+         
+         
+         incidence = ifelse( var_incidence, 
+                             rbeta( n(),
+                                    betaShapeA( bkrd_mean_incidence, 100),
+                                    betaShapeB( bkrd_mean_incidence,  100)
+                                    ),
+                             bkrd_mean_incidence ),
 
          mean_cases =  incidence  * population ,
 
@@ -139,7 +146,10 @@ disease = function(
                    (1 - case.specificity) * mean_cases * ( (1/test.positive.rate) - 1 ) ) ,
 
          cases = as.integer(
-            ifelse( trt == 1 & (period %in% "post") ,
+            ifelse( trt == 1 & ( is.na(period) || 
+                                    period %in% "post" || 
+                                    period %in% 1:12 
+                                 ) ,
                     rpois(n(),
                          reporting.fidelity * case.sensitivity *
                                             ( mean_cases * (1-(effectiveness))  + false_positive ) ),
@@ -155,20 +165,47 @@ disease = function(
    return(disease)
 }
 
+study_data = function( design = "randomized", ...
+                       ){
+   if ( design %in% 'randomized'){
+      
+      d = disease(...)
+      
+   } else if ( design %in% "pre-post"){
+      
+      d = bind_rows( disease(.period = 'pre', ...),
+               disease(.period = 'post', ...) 
+               ) 
+      # %>%
+      #    mutate(
+      #          time = c(0,1)[ factor( period, levels = c("pre", "post") )]
+      #       )
+      
+   } else if ( design %in% "interrupted time-series"){
+      
+      d = NULL
+      for (p in c(-12:-1, 1:12) ){
+         if ( is.null(d)){ d = disease( .period = p, ... ) }
+         else{
+            d = bind_rows( d, disease( .period = p, ...  ) )
+         }
+      }
+      
+      # d = d %>%
+      #    mutate(
+      #          time = c(0,1)[ factor( period, levels = c("pre", "post") )]
+      #       )
+   }
+   
+   return(d)
+}
+   
 effect = function( 
    d, 
-   .analysis = 'randomized' ){
-      
-   # if (.analysis %in% 'glm'){
-   #    
-   #    linmod = glm( cases ~ trt, family = poisson, data = d)
-   #    post <- extract.samples( linmod )
-   #    effect = (1 - exp(post$trt)) * 100
-   #    return(effect)
-   # }
+   design = 'randomized' ){
    
        # randomize
-      if ( .analysis %in% "randomized"){
+      if ( design %in% "randomized"){
          
          m1 = alist(
             cases ~ dbinom( population, p ),
@@ -178,7 +215,6 @@ effect = function(
          )
          
          data = d %>% as.data.frame() %>%
-            filter( period %in% "post") %>%
             select(
                population, cases, trt
             ) 
@@ -188,7 +224,7 @@ effect = function(
          effect = (1 - exp(post$trt)) * 100
          return(effect)
          
-      } else if ( .analysis %in% "pre-post"){
+      } else if ( design %in% "pre-post"){
          
          # pre-post
          m1 = alist(
