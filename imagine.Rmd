@@ -94,6 +94,9 @@ inputPanel(
   
   checkboxInput("var_incidence", "vary incidence", FALSE ),
   
+  sliderInput("seasonal", label = "Seasonality peak",
+              min = 1, max = 10, value = 1, step = 1, ticks = FALSE),
+  
   selectInput("runs", label = "Number of runs",
               choices = c(100, 500, 1000, 5000, 10000), selected = 100)
 
@@ -143,7 +146,8 @@ d = reactive({
               test.positive.rate =  input$test.positive.rate ,
               reporting.fidelity = input$reporting.fidelity,
               effectiveness = input$effectiveness,
-              var_incidence = input$var_incidence
+              var_incidence = input$var_incidence,
+              seasonal = input$seasonal
 )
 
       return(d)
@@ -224,7 +228,8 @@ long_run_data = reactive({
               test.positive.rate =  input$test.positive.rate ,
               reporting.fidelity = input$reporting.fidelity,
               effectiveness = input$effectiveness,
-              var_incidence = input$var_incidence
+              var_incidence = input$var_incidence,
+              seasonal = input$seasonal
 )
             
          eff = effect( d = d , design = input$design) # 
@@ -298,13 +303,20 @@ column(4,
    #         main = "Cases by treatment group", 
    #         layout=(c(1,2)) )
    
-   ggplot( data = d() ) +
-   geom_boxplot( aes( x = period.f, y = cases, group = period)) +
-   facet_grid( trt.f ~ .) + 
-   labs( x = 'Period', y = 'Cases') +
-   theme_tufte() +
+   g = ggplot( data = d() ) +
+      geom_boxplot( aes( x = factor(period), y = cases, group = period)) +
+      labs( x = 'Period', y = 'Cases') +
+      theme_tufte() +
       theme( axis.ticks = element_blank() )
-
+      
+      if (input$analyze %in% "randomized"){
+         g = g + facet_grid(. ~  trt.f)
+      } else {
+         g = g + facet_grid(  trt.f ~ . ) 
+      }  
+   
+      g
+      
    }),
  
  renderTable({
@@ -323,7 +335,7 @@ column(4,
       
      if ( input$design %in% "pre-post"){
         d = d() %>%
-        group_by( trt.f, period.f) 
+        group_by( trt.f, period) 
      } else {
         d = d() %>% group_by( trt.f) 
      } 
@@ -366,7 +378,8 @@ column(4,
     geom_point(size=5, shape=18) +
     geom_errorbarh(aes(xmax = `97.5%`, xmin = `2.5%`), height = 0.15) +
     geom_vline(xintercept = 0, linetype = "longdash") +
-    scale_x_continuous( "Estimated effectiveness", limits = seq(-60,60, 120), breaks = seq(-50, 50, 10) ) +
+    geom_vline(xintercept = input$effectiveness * 100, color = "green") +
+    scale_x_continuous( "Estimated effectiveness", limits = seq(-60,60, 120), breaks = seq(-70, 70, 10) ) +
     labs(y="")
     
    })

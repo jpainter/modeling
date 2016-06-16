@@ -21,6 +21,13 @@ d %>% group_by( period, intervention) %>% summarise(
       dif = percent( ( lag(mean.cases, n = 1) - mean.cases ) / lag(mean.cases, n = 1) )
    )
    
+g = ggplot( data = d ) +
+   geom_boxplot( aes( x = factor(period), y = cases, group = period)) +
+   labs( x = 'Period', y = 'Cases') +
+   theme_tufte() +
+   theme( axis.ticks = element_blank() )
+g
+
 # glm model
 linmod = glm( cases ~ trt, family = poisson, data = d)
 post <- extract.samples( linmod )
@@ -93,10 +100,13 @@ e = effect( d = d , .analysis = 'pre-post')
 plotPost( e )
 
 
-## interrupted time-series
+
+
+## interrupted time-series ####
+
 c = clinics(randomize = "clinic", n_clinics = 16)
 d = study_data( design = "interrupted time-series", case.specificity = .5,
-                effectiveness = .0)
+                effectiveness = .2 , season = 2)
 # View(d)
 d %>% group_by( intervention, period) %>% summarise( 
    n = n(),
@@ -113,6 +123,59 @@ ggplot( data = d ) +
    geom_boxplot( aes( x = period, y = cases, group = period)) +
    facet_grid( trt ~ .) +
    theme_tufte()
+
+# aggregate and split into trt groups
+dd = d %>% group_by(period, trt) %>% summarise( cases = mean(cases))
+dc = dd %>% as.data.frame() %>% filter(trt == 0) %>% select(cases)
+dt = dd %>% as.data.frame() %>% filter(trt == 1) %>% select(cases)
+
+dts = ts(dt, start=c(0,-12), end=c(0,12), frequency = 12)
+plot(dts)
+
+# install.packages("devtools")
+devtools::install_github("robjhyndman/forecast")
+library(forecast)
+auto.arima(dts)
+acf(dts)
+pacf(dts)
+mod1 = arima(dts)
+acf(mod1$residuals)
+pacf(mod1$residuals)
+
+
+fit <- auto.arima(dts, lambda=0, d=0, D=1)
+plot(forecast(fit))
+
+dcs = ts(dc, start=c(0,-12), end=c(0,12), frequency = 12)
+plot(dcs)
+
+# Seasonal decomposition
+fit.t <- stl(dts, s.window="period")
+plot(fit.t)
+trend = as.data.frame(fit.t$time.series)
+trend$id = as.integer(rownames(trend))
+m =  lm( trend ~ id, trend)
+post <- extract.samples( m )
+effect = 1 - (post$Intercept +  24 * post$id )/ post$Intercept
+
+
+effect = effect( d, design = "interrupted time-series")
+plotPost( effect )
+
+
+fit.c <- stl(dcs, s.window="period")
+plot(fit.c)
+
+
+
+
+
+
+
+
+
+
+
 
 d.sum = d %>% group_by(trt, period ) %>% arrange(trt, desc(period) ) %>%
   summarise(

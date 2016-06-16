@@ -104,7 +104,7 @@ disease = function(
    reporting.fidelity = 1,
    effectiveness = 0,
    var_incidence = FALSE, 
-   .period = ""
+   .period = NA
 ){
 
    disease = clinic_list  %>% as.data.frame() %>% # as.data.frame removes prior grouping
@@ -160,12 +160,12 @@ disease = function(
 
    disease$group = factor( disease$trt , levels = 0:1, labels = c('Control', 'Treatment') )
    disease$trt.f = factor( disease$trt, levels = 0:1, labels = c('control', 'treatment') )
-   disease$period.f = factor(disease$period, levels = c("pre", "post"))
+
    
    return(disease)
 }
 
-study_data = function( design = "randomized", ...
+study_data = function( design = "randomized", seasonal = 1, ...
                        ){
    if ( design %in% 'randomized'){
       
@@ -176,6 +176,8 @@ study_data = function( design = "randomized", ...
       d = bind_rows( disease(.period = 'pre', ...),
                disease(.period = 'post', ...) 
                ) 
+      
+      d$period = factor(d$period, levels = c("pre", "post"))
       # %>%
       #    mutate(
       #          time = c(0,1)[ factor( period, levels = c("pre", "post") )]
@@ -183,13 +185,22 @@ study_data = function( design = "randomized", ...
       
    } else if ( design %in% "interrupted time-series"){
       
+      s = c(0,0,0.25,0.5, 0.75,1,1,0.75,0.5,0.25,0,0)
       d = NULL
+      
       for (p in c(-12:-1, 1:12) ){
-         if ( is.null(d)){ d = disease( .period = p, ... ) }
+         
+         if ( is.null(d)){ d = disease( .period = p, ... ) } 
          else{
-            d = bind_rows( d, disease( .period = p, ...  ) )
+            
+            d = bind_rows( d, disease( .period = p, ...  )  )
          }
+         
       }
+      
+      # divide annual casese into 12 months and apply seasonal factor
+      
+      d$cases = d$cases * (seasonal^s[ abs(d$period) ] )/12
       
       # d = d %>%
       #    mutate(
@@ -207,17 +218,29 @@ effect = function(
        # randomize
       if ( design %in% "randomized"){
          
-         m1 = alist(
-            cases ~ dbinom( population, p ),
-            logit(p) <- a + bt * trt ,
-            a ~ dnorm(0, 1),
-            bt ~ dnorm(0, 1)
-         )
-         
          data = d %>% as.data.frame() %>%
             select(
                population, cases, trt
             ) 
+         
+         # bayes
+         # m1 = alist(
+         #    cases ~ dbinom( population, p ),
+         #    logit(p) <- a + bt * trt ,
+         #    a ~ dnorm(0, 1),
+         #    bt ~ dnorm(0, 1)
+         # )
+         
+         # run bayes models
+         # eff =   map( m1,
+         #              start=list( a= 0, bt=0),
+         #              data = data
+         # )
+         #
+         # effect = (1 - exp(post$binter)) * 100
+         
+         # effect = (1 - exp(post$bt)) * 100
+         
          
          linmod = glm( cases ~ trt, family = poisson, data = data)
          post <- extract.samples( linmod )
@@ -225,16 +248,6 @@ effect = function(
          return(effect)
          
       } else if ( design %in% "pre-post"){
-         
-         # pre-post
-         m1 = alist(
-            cases ~ dbinom( population, p ),
-            logit(p) <- a + (bt * trt) + (bperiod * time) + (binter * trt * time) ,
-            a ~ dnorm(0, 3),
-            bt ~ dnorm(0, 1),
-            bperiod ~ dnorm(0, 1),
-            binter ~ dnorm(0, 1)
-         )
          
          data = d %>% as.data.frame() %>%
             select(
@@ -245,32 +258,54 @@ effect = function(
             ) %>% 
             select(-period)
          
+         
+         # bayes
+         # m1 = alist(
+         #    cases ~ dbinom( population, p ),
+         #    logit(p) <- a + (bt * trt) + (bperiod * time) + (binter * trt * time) ,
+         #    a ~ dnorm(0, 3),
+         #    bt ~ dnorm(0, 1),
+         #    bperiod ~ dnorm(0, 1),
+         #    binter ~ dnorm(0, 1)
+         # )
+         
+         # run bayes models
+         # eff =   map( m1,
+         #              start=list( a= 0, bt=0),
+         #              data = data
+         # )
+         #
+         # effect = (1 - exp(post$binter)) * 100
+
+         
          linmod = glm( cases ~ trt + time + trt*time, family = poisson, data = data)
          post <- extract.samples( linmod )
-         effect = (1 - exp(post$`trt:time`)) * 100
+         effect = (1 - exp(post$`trt:time`)) 
          return(effect)
-      
+   
+         
+      } else if ( design %in% "interrupted time-series"){
+         
+
+         # aggregate and split into trt groups
+         dd = d %>% as.data.frame() %>% group_by(period, trt) %>% summarise( cases = mean(cases))
+         dt = dd %>% as.data.frame() %>% filter(trt == 1) %>% select(cases)
+         dts = ts(dt, start=c(0,-12), end=c(0,12), frequency = 12)
+
+         # Seasonal decomposition         
+         fit <- stl(dts, s.window="period")
+         trend = as.data.frame(fit$time.series)
+         trend$id = as.integer(rownames(trend))
+         m =  lm( trend ~ id, trend)
+         post <- extract.samples( m )
+         effect =  ( 1 - (post$Intercept +  24 * post$id )/ post$Intercept ) * 100
+         return(effect)
+         
       }
-      
-   # run models
-   eff =   map( m1,
-                start=list( a= 0, bt=0),
-                data = data
-   )
-   
-   # extract posterior; calculate effect
-   post <- extract.samples( eff )
-   
-   
-   if ( .analysis %in% "randomized"){ 
-      # randomize 
-      effect = (1 - exp(post$bt)) * 100
-      
-      } else if ( .analysis %in% "pre-post"){
-         # pre-post
-         effect = (1 - exp(post$binter)) * 100
-         }
-   
-   return(effect)
+
+
 }
+
+
+
 
